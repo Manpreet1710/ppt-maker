@@ -1,10 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI PPT Generator</title>
     <style>
+        .template-img {
+            width: 100%;
+            /* height: 140px; */
+            object-fit: cover;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            border: 2px solid #e0e0e0;
+            transition: all 0.3s;
+        }
+
+        .template-card:hover .template-img {
+            border-color: #667eea;
+            transform: scale(1.02);
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,7 +29,7 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #fff;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -24,7 +40,7 @@
         .container {
             background: white;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             max-width: 800px;
             width: 100%;
             overflow: hidden;
@@ -132,7 +148,7 @@
         .template-card {
             border: 3px solid #e0e0e0;
             border-radius: 15px;
-            padding: 30px;
+            padding: 5px;
             text-align: center;
             cursor: pointer;
             transition: all 0.3s;
@@ -267,8 +283,13 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .download-section {
@@ -289,6 +310,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
@@ -321,16 +343,17 @@
                 <h2>Select a Template</h2>
                 <div class="template-grid" id="template-grid">
                     <div class="template-card" data-template="template-1.pptx">
-                        <div class="template-icon">📊</div>
-                        <div class="template-name">Business Pitch</div>
+                        <img src="templates/previews/template-1.jpg" alt="Business Pitch Template" class="template-img">
+                        <!-- <div class="template-name">Business Pitch</div> -->
                     </div>
                     <div class="template-card" data-template="template-2.pptx">
-                        <div class="template-icon">🎨</div>
-                        <div class="template-name">Modern Minimal</div>
+                        <img src="templates/previews/template-2.png" alt="Business Pitch Template" class="template-img">
+
+                        <!-- <div class="template-name">Modern Minimal</div> -->
                     </div>
                     <div class="template-card" data-template="template-3.pptx">
-                        <div class="template-icon">💼</div>
-                        <div class="template-name">Corporate</div>
+                        <img src="templates/previews/template-3.jpg" alt="Business Pitch Template" class="template-img">
+                        <!-- <div class="template-name">Corporate</div> -->
                     </div>
                 </div>
                 <button class="btn" onclick="extractTemplate()" id="extract-btn" disabled>
@@ -341,14 +364,11 @@
             <!-- Step 2: Topic Input -->
             <div class="section" id="step2">
                 <h2>What's your presentation about?</h2>
-                
+
                 <div class="form-group">
                     <label for="topic-input">Presentation Topic</label>
-                    <input 
-                        type="text" 
-                        id="topic-input" 
-                        placeholder="e.g., The Future of Cricket, AI in Healthcare, etc."
-                    >
+                    <input type="text" id="topic-input"
+                        placeholder="e.g., The Future of Cricket, AI in Healthcare, etc.">
                 </div>
 
                 <div class="info-text">
@@ -398,7 +418,7 @@
 
         // Template Selection
         document.querySelectorAll('.template-card').forEach(card => {
-            card.addEventListener('click', function() {
+            card.addEventListener('click', function () {
                 document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
                 this.classList.add('selected');
                 selectedTemplate = this.getAttribute('data-template');
@@ -419,7 +439,7 @@
             try {
                 const response = await fetch(`${API_BASE}/extract`, {
                     method: 'POST',
-                    headers: { 
+                    headers: {
                         'Content-Type': 'application/json',
                         'Accept': 'application/json'
                     },
@@ -433,11 +453,11 @@
                 }
 
                 extractedTexts = data.extracted_texts;
-                
+
                 if (!extractedTexts || extractedTexts.length === 0) {
                     throw new Error('No text content found in template');
                 }
-                
+
                 console.log('✅ Extracted texts:', extractedTexts.length);
                 displayExtractedTexts(extractedTexts);
                 goToStep(2);
@@ -453,12 +473,12 @@
         function displayExtractedTexts(texts) {
             const list = document.getElementById('extracted-list');
             list.innerHTML = '';
-            
+
             texts.forEach((item, index) => {
                 const div = document.createElement('div');
                 div.className = 'extracted-item';
-                const preview = item.original.length > 50 
-                    ? item.original.substring(0, 50) + '...' 
+                const preview = item.original.length > 50
+                    ? item.original.substring(0, 50) + '...'
                     : item.original;
                 div.innerHTML = `<strong>Slide ${item.slide} - Text ${index + 1}:</strong> ${preview}`;
                 list.appendChild(div);
@@ -468,7 +488,7 @@
         // Generate PPT - FIXED VERSION
         async function generatePPT() {
             const topic = document.getElementById('topic-input').value.trim();
-            
+
             if (!topic) {
                 showError('Please enter a presentation topic');
                 return;
@@ -493,7 +513,7 @@
 
                 const response = await fetch(`${API_BASE}/generate`, {
                     method: 'POST',
-                    headers: { 
+                    headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
@@ -533,7 +553,7 @@
                 // Get the blob
                 generatedBlob = await response.blob();
                 console.log('Blob size:', generatedBlob.size, 'bytes');
-                
+
                 if (!generatedBlob || generatedBlob.size === 0) {
                     throw new Error('Generated presentation is empty');
                 }
@@ -547,7 +567,7 @@
                     URL.revokeObjectURL(downloadUrl);
                 }
                 downloadUrl = URL.createObjectURL(generatedBlob);
-                
+
                 console.log('✅ Presentation generated successfully!');
                 goToStep(3);
             } catch (error) {
@@ -583,7 +603,7 @@
                 a.style.display = 'none';
                 document.body.appendChild(a);
                 a.click();
-                
+
                 // Cleanup after download
                 setTimeout(() => {
                     document.body.removeChild(a);
@@ -660,21 +680,21 @@
                     method: 'GET',
                     headers: { 'Accept': 'application/json' }
                 });
-                
+
                 if (response.ok) {
                     const data = await response.json();
                     console.log('✅ Connected to API:', data.message);
-                    
+
                     // Check health
                     const healthResponse = await fetch(`${API_BASE}/health`);
                     if (healthResponse.ok) {
                         const health = await healthResponse.json();
                         console.log('📋 Templates status:', health.templates);
-                        
+
                         const missing = Object.entries(health.templates)
                             .filter(([_, status]) => status === 'missing')
                             .map(([name, _]) => name);
-                        
+
                         if (missing.length > 0) {
                             showError(`Missing templates: ${missing.join(', ')}. Please add them to the templates folder.`);
                         }
@@ -687,4 +707,5 @@
         });
     </script>
 </body>
+
 </html>

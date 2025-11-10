@@ -29,7 +29,7 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 GEMINI_API_KEY = "AIzaSyCoFbUiVBek9who2wXOC4tkE4mJ0JeV0_o"
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash-exp")
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 # -----------------------------------------------------------------------------
 # Template Directory Setup
