@@ -1,190 +1,107 @@
-import google.generativeai as genai
 from pptx import Presentation
 import os
+import json # JSON डेटा को हैंडल करने के लिए यह लाइब्रेरी जोड़ी गई है
 
-# -----------------------------------------------------------------------------
-# 🔑 Gemini API Config
-# -----------------------------------------------------------------------------
-genai.configure(api_key="AIzaSyCoFbUiVBek9who2wXOC4tkE4mJ0JeV0_o")
-model = genai.GenerativeModel("gemini-2.0-flash")
+# MsoPlaceholderType values के लिए एक स्थानीय लुकअप डिक्शनरी (A local lookup dictionary for MsoPlaceholderType values)
+# यह 'ImportError' से बचने के लिए सीधे pptx.enum.shapes को इम्पोर्ट करने से बचता है।
+PLACEHOLDER_TYPES = {
+    1: "TITLE (शीर्षक)",
+    2: "BODY (मुख्य टेक्स्ट)",
+    3: "CENTER_TITLE (केंद्र शीर्षक)",
+    4: "SUBTITLE (उपशीर्षक)",
+    5: "DATETIME (दिनांक)",
+    6: "SLIDE_NUMBER (स्लाइड संख्या)",
+    7: "FOOTER (फुटर)",
+    8: "CONTENT (मीडिया/कंटेंट)",
+    9: "PICTURE (चित्र)",
+    10: "CHART (चार्ट)",
+    11: "TABLE (तालिका)",
+    12: "CLIP_ART (क्लिप आर्ट)",
+    13: "DIAGRAM (डायग्राम)",
+    14: "MEDIA_CLIP (मीडिया क्लिप)",
+    15: "ORG_CHART (संगठन चार्ट)",
+}
 
-# -----------------------------------------------------------------------------
-# 🎯 Step 1: Extract Text from Template PPT (TREAT MULTI-LINE AS ONE)
-# -----------------------------------------------------------------------------
+# इनपुट फ़ाइल का पथ (Path of the input file)
 input_path = "templates/template-1.pptx"
-output_path = "templates/auto_ai_updated.pptx"
+# आउटपुट JSON फ़ाइल का पथ
+output_path = "output_data.json"
 
-prs = Presentation(input_path)
-
-extracted_structure = []
-
-def extract_texts(shape, slide_num):
-    """Extract text treating entire text frame as one unit"""
-    if shape.has_text_frame:
-        # Get ALL text from the entire text frame (all paragraphs combined)
-        full_text = "\n".join(
-            "".join(run.text for run in p.runs).strip() 
-            for p in shape.text_frame.paragraphs
-        ).strip()
-        
-        if full_text:
-            extracted_structure.append({
-                'slide': slide_num,
-                'original': full_text,
-                'type': 'text',
-                'paragraph_count': len(shape.text_frame.paragraphs)
-            })
+def extract_placeholder_text(pptx_path):
+    """
+    दिए गए PPTX फ़ाइल से सभी प्लेसहोल्डर डेटा को निकालता है और JSON फ़ाइल में सेव करता है।
+    """
+    print(f"फाइल को पढ़ने की कोशिश कर रहा हूँ: {pptx_path}")
     
-    elif shape.has_table:
-        for row in shape.table.rows:
-            for cell in row.cells:
-                text = cell.text.strip()
-                if text:
-                    extracted_structure.append({
-                        'slide': slide_num,
-                        'original': text,
-                        'type': 'table',
-                        'paragraph_count': 1
-                    })
-    
-    elif shape.shape_type == 6:  # Group shape
-        for s in shape.shapes:
-            extract_texts(s, slide_num)
+    # सुनिश्चित करें कि फ़ाइल मौजूद है (Ensure the file exists)
+    if not os.path.exists(pptx_path):
+        print(f"त्रुटि: फ़ाइल '{pptx_path}' नहीं मिली।")
+        print("कृपया सुनिश्चित करें कि 'templates' फ़ोल्डर में 'template-1.pptx' फ़ाइल मौजूद है।")
+        return
 
-# Extract from all slides
-for i, slide in enumerate(prs.slides, 1):
-    for shape in slide.shapes:
-        extract_texts(shape, i)
+    try:
+        # प्रेजेंटेशन ऑब्जेक्ट को लोड करें (Load the Presentation object)
+        prs = Presentation(pptx_path)
+        print("फाइल सफलतापूर्वक लोड हो गई। प्लेसहोल्डर की खोज कर रहा हूँ...")
 
-print("📄 Extracted Template Structure:\n")
-for idx, item in enumerate(extracted_structure):
-    print(f"{idx+1}. [Slide {item['slide']}] {repr(item['original'])}")
+        # सभी डेटा को स्टोर करने के लिए एक लिस्ट (List to store all data)
+        extracted_data = []
 
-print("\n-------------------------------------------\n")
-
-# -----------------------------------------------------------------------------
-# 🧠 Step 2: Generate AI Content Based on Template Structure
-# -----------------------------------------------------------------------------
-topic = "The Future of Cricket"
-
-# Create structured prompt with template info
-template_info = "\n".join([
-    f"Text Box {i+1} (Slide {item['slide']}): {repr(item['original'])}"
-    for i, item in enumerate(extracted_structure)
-])
-
-prompt = f"""
-You are an expert presentation designer.
-
-I have a PowerPoint template with {len(extracted_structure)} text boxes:
-{template_info}
-
-Create professional content on the topic: "{topic}"
-
-Rules:
-- Generate EXACTLY {len(extracted_structure)} replacements
-- If original has multiple lines (like "IT Software\\nPitch Deck"), keep that format
-- Keep titles SHORT (2-5 words)
-- Keep content CONCISE (1-2 lines)
-
-Output format (preserve line breaks with \\n):
-Text 1: ...
-Text 2: ...
-Text 3: ...
-"""
-
-response = model.generate_content(prompt)
-ai_text = response.text.strip()
-
-print("🧠 Gemini Generated Content:\n")
-print(ai_text)
-print("\n-------------------------------------------\n")
-
-# -----------------------------------------------------------------------------
-# 🧩 Step 3: Parse AI Response
-# -----------------------------------------------------------------------------
-new_texts = []
-for line in ai_text.split("\n"):
-    if line.strip().startswith("Text "):
-        text = line.split(":", 1)[1].strip() if ":" in line else ""
-        if text:
-            # Replace literal \n with actual newline
-            text = text.replace("\\n", "\n")
-            new_texts.append(text)
-
-# Safety check
-if len(new_texts) != len(extracted_structure):
-    print(f"⚠️ Warning: AI generated {len(new_texts)} texts but template needs {len(extracted_structure)}")
-    while len(new_texts) < len(extracted_structure):
-        new_texts.append("[Content]")
-    new_texts = new_texts[:len(extracted_structure)]
-
-print("✅ Parsed new_texts:\n")
-for i, text in enumerate(new_texts):
-    print(f"{i+1}. {repr(text)}")
-print("\n-------------------------------------------\n")
-
-# -----------------------------------------------------------------------------
-# 🔄 Step 4: Replace Text While Preserving Style (ENTIRE TEXT FRAME)
-# -----------------------------------------------------------------------------
-prs = Presentation(input_path)  # Reload fresh template
-index = 0
-
-def replace_with_style(shape):
-    global index
-    
-    if shape.has_text_frame:
-        # Get full existing text
-        full_text = "\n".join(
-            "".join(run.text for run in p.runs).strip() 
-            for p in shape.text_frame.paragraphs
-        ).strip()
-        
-        if full_text and index < len(new_texts):
-            new_text = new_texts[index]
-            print(f"🔁 [{index+1}] '{full_text}' → '{new_text}'")
+        # हर स्लाइड पर Iterate करें (Iterate over every slide)
+        for slide_idx, slide in enumerate(prs.slides):
+            slide_data = {
+                "slide_number": slide_idx + 1,
+                "placeholders": []
+            }
             
-            # Split new text by lines
-            new_lines = new_text.split("\n")
-            
-            # Clear all existing paragraphs
-            for paragraph in shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    run.text = ""
-            
-            # Add new content line by line
-            for i, line in enumerate(new_lines):
-                if i < len(shape.text_frame.paragraphs):
-                    # Use existing paragraph
-                    p = shape.text_frame.paragraphs[i]
-                    if p.runs:
-                        p.runs[0].text = line
+            # स्लाइड के सभी शेप्स (shapes) पर Iterate करें (Iterate over all shapes in the slide)
+            for shape_idx, shape in enumerate(slide.shapes):
+                
+                # जांचें कि क्या शेप एक प्लेसहोल्डर है (Check if the shape is a placeholder)
+                if shape.is_placeholder:
+                    
+                    placeholder_type_value = shape.placeholder_format.type
+                    
+                    # PLACEHOLDER_TYPES डिक्शनरी से नाम प्राप्त करें (Get the name from the PLACEHOLDER_TYPES dictionary)
+                    placeholder_type_name = PLACEHOLDER_TYPES.get(
+                        placeholder_type_value, 
+                        f"UNKNOWN ({placeholder_type_value})"
+                    )
+
+                    placeholder_info = {
+                        "index_in_slide": shape_idx + 1,
+                        "type_id": placeholder_type_value,
+                        "type_name": placeholder_type_name
+                    }
+
+                    # जांचें कि क्या प्लेसहोल्डर में टेक्स्ट फ्रेम है (Check if the placeholder has a text frame)
+                    if shape.has_text_frame:
+                        # टेक्स्ट निकालें (Extract the text)
+                        text = shape.text.strip()
+                        placeholder_info["text_content"] = text
                     else:
-                        p.add_run().text = line
-                else:
-                    # Add new paragraph if needed
-                    p = shape.text_frame.add_paragraph()
-                    p.text = line
+                        placeholder_info["text_content"] = "(Non-Text Placeholder)"
+                    
+                    slide_data["placeholders"].append(placeholder_info)
             
-            index += 1
-    
-    elif shape.has_table:
-        for row in shape.table.rows:
-            for cell in row.cells:
-                text = cell.text.strip()
-                if text and index < len(new_texts):
-                    print(f"🔁 [{index+1}] Table: '{text}' → '{new_texts[index]}'")
-                    cell.text = new_texts[index]
-                    index += 1
-    
-    elif shape.shape_type == 6:  # Group
-        for s in shape.shapes:
-            replace_with_style(s)
+            # यदि स्लाइड में कोई प्लेसहोल्डर मिला, तो उसे मुख्य डेटा लिस्ट में जोड़ें
+            if slide_data["placeholders"]:
+                extracted_data.append(slide_data)
 
-# Process all slides
-for slide in prs.slides:
-    for shape in slide.shapes:
-        replace_with_style(shape)
+        # ------------------------------------------------------------------
+        # JSON में डेटा सेव करें (Save data to JSON)
+        print("\n--- डेटा प्रोसेसिंग पूरी हुई ---")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            # json.dump का उपयोग करके डेटा को इंडेंटेशन के साथ JSON फॉर्मेट में सेव करें
+            json.dump(extracted_data, f, ensure_ascii=False, indent=4)
+        
+        print(f"प्लेसहोल्डर डेटा सफलतापूर्वक JSON फॉर्मेट में सेव कर दिया गया है।")
+        print(f"आउटपुट फ़ाइल पथ: {output_path}")
+        # ------------------------------------------------------------------
 
-prs.save(output_path)
-print(f"\n🎉 Done! AI-generated PPT saved as: {output_path}")
+    except Exception as e:
+        print(f"\nफ़ाइल पढ़ते समय एक अंतिम त्रुटि हुई: {e}")
+
+if __name__ == "__main__":
+    # स्क्रिप्ट चलाएं (Run the script)
+    extract_placeholder_text(input_path)
