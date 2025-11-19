@@ -1,107 +1,166 @@
 from pptx import Presentation
-import os
-import json # JSON डेटा को हैंडल करने के लिए यह लाइब्रेरी जोड़ी गई है
+import json
 
-# MsoPlaceholderType values के लिए एक स्थानीय लुकअप डिक्शनरी (A local lookup dictionary for MsoPlaceholderType values)
-# यह 'ImportError' से बचने के लिए सीधे pptx.enum.shapes को इम्पोर्ट करने से बचता है।
-PLACEHOLDER_TYPES = {
-    1: "TITLE (शीर्षक)",
-    2: "BODY (मुख्य टेक्स्ट)",
-    3: "CENTER_TITLE (केंद्र शीर्षक)",
-    4: "SUBTITLE (उपशीर्षक)",
-    5: "DATETIME (दिनांक)",
-    6: "SLIDE_NUMBER (स्लाइड संख्या)",
-    7: "FOOTER (फुटर)",
-    8: "CONTENT (मीडिया/कंटेंट)",
-    9: "PICTURE (चित्र)",
-    10: "CHART (चार्ट)",
-    11: "TABLE (तालिका)",
-    12: "CLIP_ART (क्लिप आर्ट)",
-    13: "DIAGRAM (डायग्राम)",
-    14: "MEDIA_CLIP (मीडिया क्लिप)",
-    15: "ORG_CHART (संगठन चार्ट)",
-}
-
-# इनपुट फ़ाइल का पथ (Path of the input file)
-input_path = "templates/template-1.pptx"
-# आउटपुट JSON फ़ाइल का पथ
-output_path = "output_data.json"
-
-def extract_placeholder_text(pptx_path):
+# -------------------------------------------------------------------
+# HELPER: Convert hierarchical tree to slide-wise content
+# -------------------------------------------------------------------
+def parse_content_tree(tree_data):
     """
-    दिए गए PPTX फ़ाइल से सभी प्लेसहोल्डर डेटा को निकालता है और JSON फ़ाइल में सेव करता है।
+    Converts hierarchical content tree into slide-based structure.
+    Each level 1 item = 1 slide
+    Level 2 items = bullet points
+    Level 0 items = sub-bullets or content
     """
-    print(f"फाइल को पढ़ने की कोशिश कर रहा हूँ: {pptx_path}")
+    slides_content = []
     
-    # सुनिश्चित करें कि फ़ाइल मौजूद है (Ensure the file exists)
-    if not os.path.exists(pptx_path):
-        print(f"त्रुटि: फ़ाइल '{pptx_path}' नहीं मिली।")
-        print("कृपया सुनिश्चित करें कि 'templates' फ़ोल्डर में 'template-1.pptx' फ़ाइल मौजूद है।")
-        return
-
-    try:
-        # प्रेजेंटेशन ऑब्जेक्ट को लोड करें (Load the Presentation object)
-        prs = Presentation(pptx_path)
-        print("फाइल सफलतापूर्वक लोड हो गई। प्लेसहोल्डर की खोज कर रहा हूँ...")
-
-        # सभी डेटा को स्टोर करने के लिए एक लिस्ट (List to store all data)
-        extracted_data = []
-
-        # हर स्लाइड पर Iterate करें (Iterate over every slide)
-        for slide_idx, slide in enumerate(prs.slides):
-            slide_data = {
-                "slide_number": slide_idx + 1,
-                "placeholders": []
-            }
+    for section in tree_data:
+        if section.get("level") != 1:
+            continue
             
-            # स्लाइड के सभी शेप्स (shapes) पर Iterate करें (Iterate over all shapes in the slide)
-            for shape_idx, shape in enumerate(slide.shapes):
-                
-                # जांचें कि क्या शेप एक प्लेसहोल्डर है (Check if the shape is a placeholder)
-                if shape.is_placeholder:
-                    
-                    placeholder_type_value = shape.placeholder_format.type
-                    
-                    # PLACEHOLDER_TYPES डिक्शनरी से नाम प्राप्त करें (Get the name from the PLACEHOLDER_TYPES dictionary)
-                    placeholder_type_name = PLACEHOLDER_TYPES.get(
-                        placeholder_type_value, 
-                        f"UNKNOWN ({placeholder_type_value})"
-                    )
-
-                    placeholder_info = {
-                        "index_in_slide": shape_idx + 1,
-                        "type_id": placeholder_type_value,
-                        "type_name": placeholder_type_name
-                    }
-
-                    # जांचें कि क्या प्लेसहोल्डर में टेक्स्ट फ्रेम है (Check if the placeholder has a text frame)
-                    if shape.has_text_frame:
-                        # टेक्स्ट निकालें (Extract the text)
-                        text = shape.text.strip()
-                        placeholder_info["text_content"] = text
-                    else:
-                        placeholder_info["text_content"] = "(Non-Text Placeholder)"
-                    
-                    slide_data["placeholders"].append(placeholder_info)
-            
-            # यदि स्लाइड में कोई प्लेसहोल्डर मिला, तो उसे मुख्य डेटा लिस्ट में जोड़ें
-            if slide_data["placeholders"]:
-                extracted_data.append(slide_data)
-
-        # ------------------------------------------------------------------
-        # JSON में डेटा सेव करें (Save data to JSON)
-        print("\n--- डेटा प्रोसेसिंग पूरी हुई ---")
-        with open(output_path, 'w', encoding='utf-8') as f:
-            # json.dump का उपयोग करके डेटा को इंडेंटेशन के साथ JSON फॉर्मेट में सेव करें
-            json.dump(extracted_data, f, ensure_ascii=False, indent=4)
+        slide_data = {
+            "title": section.get("name", ""),
+            "bullets": []
+        }
         
-        print(f"प्लेसहोल्डर डेटा सफलतापूर्वक JSON फॉर्मेट में सेव कर दिया गया है।")
-        print(f"आउटपुट फ़ाइल पथ: {output_path}")
-        # ------------------------------------------------------------------
+        # Process children (level 2 and level 0 items)
+        for child in section.get("children", []):
+            if child.get("level") == 2:
+                # Level 2 = main bullet point
+                bullet = {
+                    "text": child.get("name", ""),
+                    "sub_bullets": []
+                }
+                
+                # Check for sub-bullets (level 0)
+                for sub_child in child.get("children", []):
+                    if sub_child.get("level") == 0:
+                        bullet["sub_bullets"].append(sub_child.get("name", ""))
+                
+                slide_data["bullets"].append(bullet)
+            elif child.get("level") == 0:
+                # Direct level 0 under level 1
+                slide_data["bullets"].append({
+                    "text": child.get("name", ""),
+                    "sub_bullets": []
+                })
+        
+        slides_content.append(slide_data)
+    
+    return slides_content
 
-    except Exception as e:
-        print(f"\nफ़ाइल पढ़ते समय एक अंतिम त्रुटि हुई: {e}")
 
+# -------------------------------------------------------------------
+# 1) EXTRACT TEMPLATE STRUCTURE
+# -------------------------------------------------------------------
+def extract_template(path):
+    """Extract placeholder structure from template"""
+    prs = Presentation(path)
+    slides = []
+
+    for idx, slide in enumerate(prs.slides, start=1):
+        placeholders = []
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                # Detect placeholder type based on position/size
+                placeholder_type = "BODY"
+                if shape.top < 1000000:  # Top of slide (approx)
+                    if len(shape.text.strip()) < 50:  # Short text = likely title
+                        placeholder_type = "TITLE"
+                
+                placeholders.append({
+                    "id": shape.shape_id,
+                    "text": shape.text.strip(),
+                    "type": placeholder_type,
+                    "left": shape.left,
+                    "top": shape.top
+                })
+
+        # Sort by position (top to bottom, left to right)
+        placeholders.sort(key=lambda x: (x["top"], x["left"]))
+        
+        slides.append({
+            "slide_number": idx,
+            "placeholders": placeholders
+        })
+
+    return {"slides": slides}
+
+
+# -------------------------------------------------------------------
+# 2) FILL PRESENTATION WITH CONTENT
+# -------------------------------------------------------------------
+def fill_presentation(template_path, content_tree, output_path):
+    """
+    Fill template with hierarchical content
+    """
+    prs = Presentation(template_path)
+    slides_content = parse_content_tree(content_tree)
+    
+    # Match content slides with template slides
+    for idx, (slide, content) in enumerate(zip(prs.slides, slides_content)):
+        if idx >= len(slides_content):
+            break
+            
+        # Find title and body placeholders
+        title_shape = None
+        body_shape = None
+        
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                # First large text box at top = title
+                if shape.top < 1500000 and title_shape is None:
+                    title_shape = shape
+                # Second text box = body
+                elif body_shape is None and shape != title_shape:
+                    body_shape = shape
+        
+        # Fill title
+        if title_shape and content.get("title"):
+            title_shape.text = content["title"]
+        
+        # Fill body with bullets
+        if body_shape and content.get("bullets"):
+            text_frame = body_shape.text_frame
+            text_frame.clear()  # Clear existing content
+            
+            for bullet_idx, bullet in enumerate(content["bullets"]):
+                # Add main bullet
+                if bullet_idx == 0:
+                    p = text_frame.paragraphs[0]
+                else:
+                    p = text_frame.add_paragraph()
+                
+                p.text = bullet["text"]
+                p.level = 0  # Main bullet level
+                
+                # Add sub-bullets
+                for sub_bullet in bullet.get("sub_bullets", []):
+                    p = text_frame.add_paragraph()
+                    p.text = sub_bullet
+                    p.level = 1  # Sub-bullet level
+    
+    prs.save(output_path)
+    return output_path
+
+
+# -------------------------------------------------------------------
+# USAGE
+# -------------------------------------------------------------------
 if __name__ == "__main__":
-    # स्क्रिप्ट चलाएं (Run the script)
-    extract_placeholder_text(input_path)
+    template = "templates/template-1.pptx"
+    
+    # Load your AI-generated content
+    with open("ai_content.json") as f:
+        ai_content = json.load(f)
+    
+    # Optional: Extract template structure for debugging
+    template_structure = extract_template(template)
+    with open("template_structure.json", "w") as f:
+        json.dump(template_structure, f, indent=4)
+    
+    # Fill presentation with content
+    output = fill_presentation(template, ai_content, "output_filled.pptx")
+    
+    print(f"✅ SUCCESS: {output}")
+    print(f"📊 Processed {len(ai_content)} sections")

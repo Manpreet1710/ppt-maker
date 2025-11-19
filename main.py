@@ -9,9 +9,10 @@ import io
 from datetime import datetime
 import json
 from pathlib import Path
+from typing import List, Dict, Optional, Any
 import os
 
-app = FastAPI(title="AI PPT Generator API - New Flow")
+app = FastAPI(title="AI PPT Generator API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,319 +29,67 @@ model = genai.GenerativeModel("gemini-2.0-flash")
 TEMPLATE_DIR = Path("templates")
 TEMPLATE_DIR.mkdir(exist_ok=True)
 
+
 class ContentGenRequest(BaseModel):
     topic: str
-    slide_count: int = 3
+    slide_count: int = 5
     language: str = "English"
     tone: str = "Professional"
 
-
-class OutlineResponse(BaseModel):
-    topic: str
-    slides: List[Dict]
-    message: str
-
-
 class GeneratePPTRequest(BaseModel):
-    topic: str
-    outline: List[Dict]  # Generated outline from step 1
-    template: str
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
+    content: Any  # JSON string from AI
+    template_id: str  # template_id like "template_1"
 
 TEMPLATE_INFO = {
     "template-1.pptx": {
-        "template_id": "template_1",
-        "subject": "Blue and White Minimalist Mid-Year Work Report Template",
-        "cover": "templates/previews/template-1.png"
+        "id": "template_1",
+        "name": "Blue Minimalist Report",
+        "category": "Business",
+        "slides_count": 5,
+        "thumbnail_url": "/templates/previews/template-1.png"
     },
     "template-2.pptx": {
-        "template_id": "template_2",
-        "subject": "Modern Dark Professional Pitch Deck",
-        "cover": "templates/previews/template-2.png"
+        "id": "template_2",
+        "name": "Dark Professional Pitch",
+        "category": "Pitch Deck",
+        "slides_count": 5,
+        "thumbnail_url": "/templates/previews/template-2.png"
     },
     "template-3.pptx": {
-        "template_id": "template_3",
-        "subject": "Clean Light Corporate Presentation Template",
-        "cover": "templates/previews/template-3.png"
+        "id": "template_3",
+        "name": "Light Corporate",
+        "category": "Corporate",
+        "slides_count": 5,
+        "thumbnail_url": "/templates/previews/template-3.png"
     }
 }
-
-
-TEMPLATE_FOLDER = "templates"
-@app.get("/templates")
-def list_templates():
-    templates = []
-
-    for filename, info in TEMPLATE_INFO.items():
-
-        file_path = os.path.join(TEMPLATE_FOLDER, filename)
-
-        templates.append({
-            "file": file_path,              # ← now this is templates/template-1.pptx
-            "template_id": info["template_id"],
-            "subject": info["subject"],
-            "thumbnail_url": info["cover"]
-        })
-
-    return {"templates": templates}
-
-def get_paragraph_font_size(paragraph):
-    """Return average font size of a paragraph."""
-    sizes = []
-    for run in paragraph.runs:
-        if run.font.size:
-            sizes.append(run.font.size.pt)
-    return sum(sizes) / len(sizes) if sizes else 0
-
-
-def replace_text_preserve_style(shape, new_text):
-    """
-    Replace text while preserving styling safely
-    (works even when template uses theme/scheme colors).
-    """
-
-    if not shape.has_text_frame:
-        return
-
-    text_frame = shape.text_frame
-    p = text_frame.paragraphs[0]
-
-    # If no runs, create one
-    if len(p.runs) == 0:
-        run = p.add_run()
-        run.text = new_text
-        return
-
-    runs = p.runs
-
-    # Keep the first run for style
-    style_run = runs[0]
-
-    # SAFELY extract formatting
-    font_style = {
-        "bold": style_run.font.bold,
-        "italic": style_run.font.italic,
-        "underline": style_run.font.underline,
-        "size": style_run.font.size,
-        "name": style_run.font.name,
-        "color_rgb": None
-    }
-
-    # COLOR FIX → only copy rgb if available
-    if style_run.font.color and hasattr(style_run.font.color, "rgb") and style_run.font.color.rgb:
-        font_style["color_rgb"] = style_run.font.color.rgb
-
-    # Remove extra runs
-    for r in list(runs)[1:]:
-        p._p.remove(r._r)
-
-    # Replace text
-    style_run.text = new_text
-
-    # Reapply style safely
-    style_run.font.bold = font_style["bold"]
-    style_run.font.italic = font_style["italic"]
-    style_run.font.underline = font_style["underline"]
-    style_run.font.size = font_style["size"]
-    style_run.font.name = font_style["name"]
-
-    # Apply color only if real RGB exists
-    if font_style["color_rgb"]:
-        style_run.font.color.rgb = font_style["color_rgb"]
-
-
-def get_shape_font_score(shape):
-    """Calculate average font size of all paragraphs in a shape."""
-    if not shape.has_text_frame:
-        return 0
-
-    sizes = []
-    for p in shape.text_frame.paragraphs:
-        avg_font = get_paragraph_font_size(p)
-        if avg_font > 0:
-            sizes.append(avg_font)
-
-    return sum(sizes) / len(sizes) if sizes else 0
-
-
-def generate_presentation_outline(topic: str, slide_count: int) -> List[Dict]:
-    """
-    Generates N-slide outline.
-    Each slide:
-    - Title = 2–3 words
-    - Content = 1 short sentence
-    """
-
-    prompt = f"""
-You are a professional presentation writer.
-
-Create a clean {slide_count}-slide outline for the topic: "{topic}".
-
-STRICT RULES:
-1. EXACTLY {slide_count} slides.
-2. Title = 2–3 words only.
-3. Content = 1 short sentence (max 12–15 words).
-4. Follow this structure:
-   - Slide 1: Introduction
-   - Slide {slide_count}: Conclusion
-   - Slides 2 to {slide_count-1}: Key points
-
-RETURN ONLY VALID JSON (NO markdown):
-[
-  {{
-    "slide": 1,
-    "title": "Two Words",
-    "contents": ["Short sentence"]
-  }}
-]
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        json_text = response.text.strip()
-
-        # Clean possible code blocks
-        if "```json" in json_text:
-            json_text = json_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_text:
-            json_text = json_text.split("```")[1].split("```")[0].strip()
-
-        outline = json.loads(json_text)
-
-        if not isinstance(outline, list) or len(outline) != slide_count:
-            raise ValueError("AI did not generate correct number of slides")
-
-        for i, slide in enumerate(outline, 1):
-
-            slide["slide"] = i
-
-            if "title" not in slide or "contents" not in slide:
-                raise ValueError(f"Slide {i} missing title/content")
-
-            if len(slide["title"].split()) > 3:
-                raise ValueError(f"Slide {i} title too long (max 3 words)")
-
-            if len(slide["contents"]) != 1:
-                raise ValueError(
-                    f"Slide {i} must contain exactly 1 content item")
-
-            if len(slide["contents"][0].split()) > 15:
-                raise ValueError(f"Slide {i} content too long (max 15 words)")
-
-        return outline
-
-    except json.JSONDecodeError:
-        raise ValueError("Failed to parse JSON")
-    except Exception as e:
-        raise ValueError(f"Failed to generate outline: {str(e)}")
-
-
-def trim_slides(prs, required_count):
-    """
-    Remove extra slides beyond required_count.
-    """
-    total_slides = len(prs.slides)
-
-    if total_slides <= required_count:
-        return prs  # no change needed
-
-    # Remove from last to first (safe deletion)
-    for index in range(total_slides - 1, required_count - 1, -1):
-        rId = prs.slides._sldIdLst[index].rId
-        prs.part.drop_rel(rId)
-        del prs.slides._sldIdLst[index]
-
-    return prs
-
-
-def replace_text_in_ppt(template_path: str, ai_slides: List[Dict]):
-    prs = Presentation(template_path)
-    logs = []
-
-    required = len(ai_slides)
-
-    # STEP 1: Remove extra slides
-    original_slides = len(prs.slides)
-    trim_slides(prs, required)
-
-    logs.append(f"🗑 Removed {original_slides - required} extra slides")
-
-    # STEP 2: Replace text in remaining slides
-    for idx, slide in enumerate(prs.slides):
-        target = ai_slides[idx]
-        new_title = target["title"]
-        new_contents = target["contents"]
-
-        shapes_list = []
-
-        for shp in slide.shapes:
-            if shp.has_text_frame:
-                text = shp.text.strip()
-                if not text:
-                    continue
-                font = get_shape_font_score(shp)
-                shapes_list.append((shp, text, font))
-
-        if not shapes_list:
-            logs.append(f"⚠️ Slide {idx+1}: No text shapes found")
-            continue
-
-        # Sort shapes by font size (title = biggest)
-        shapes_list.sort(key=lambda x: x[2], reverse=True)
-
-        # Replace title
-        title_shape = shapes_list[0][0]
-        # title_shape.text = new_title
-        replace_text_preserve_style(title_shape, new_title)
-
-        logs.append(f"✅ Slide {idx+1} TITLE replaced")
-
-        # Replace content
-        for i, (shape, old_text, _) in enumerate(shapes_list[1:]):
-            if i < len(new_contents):
-                # shape.text = new_contents[i]
-                replace_text_preserve_style(shape, new_contents[i])
-
-                logs.append(f"   CONTENT {i+1} replaced")
-            else:
-                shape.text = ""
-                logs.append(f"   CONTENT {i+1} cleared (no more AI content)")
-
-    stream = io.BytesIO()
-    prs.save(stream)
-    stream.seek(0)
-    return stream, logs
 
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
 
-
 @app.get("/")
 def root():
     return {
-        "message": "AI PPT Generator API - New Flow",
-        "version": "3.0",
+        "message": "AI PPT Generator API",
+        "version": "4.0",
         "status": "running",
-        "flow": [
-            "1. POST /analyze-topic - Generate outline from topic",
-            "2. POST /generate-ppt - Create PPT with outline + template"
-        ],
-        "templates_directory": str(TEMPLATE_DIR),
-        "valid_templates": VALID_TEMPLATES
+        "endpoints": {
+            "generate_content": "POST /generate-content",
+            "generate_ppt": "POST /generate-ppt",
+            "templates": "GET /templates",
+            "health": "GET /health"
+        }
     }
 
 
 @app.get("/health")
 def health_check():
-    """Check system health and templates"""
+    """Check system health"""
     templates_status = {}
-    for template in VALID_TEMPLATES:
-        path = TEMPLATE_DIR / template
-        templates_status[template] = "found" if path.exists() else "missing"
+    for filename in TEMPLATE_INFO.keys():
+        path = TEMPLATE_DIR / filename
+        templates_status[filename] = "found" if path.exists() else "missing"
 
     return {
         "status": "healthy",
@@ -349,21 +98,37 @@ def health_check():
     }
 
 
+@app.get("/templates")
+def list_templates():
+    """Get available templates"""
+    templates = []
+    for filename, info in TEMPLATE_INFO.items():
+        templates.append({
+            "id": info["id"],
+            "name": info["name"],
+            "category": info["category"],
+            "slides_count": info["slides_count"],
+            "thumbnail_url": info["thumbnail_url"]
+        })
+
+    return {"templates": templates}
+
 
 @app.post("/generate-content")
 async def generate_content(request: ContentGenRequest):
-
+    """Generate hierarchical content using Gemini AI"""
     if not request.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty")
-     
+
     prompt = f"""
 You are an expert presentation generator.
 
 TASK:
-Generate a hierarchical children JSON structure for the topic: "{request.topic}".
+Generate a hierarchical JSON structure for the topic: "{request.topic}".
 
 LANGUAGE: {request.language}
 TONE: {request.tone}
+SLIDES: {request.slide_count}
 
 STRICT OUTPUT RULES:
 1. Output MUST be ONLY valid JSON.
@@ -380,27 +145,41 @@ HIERARCHY FORMAT (FOLLOW EXACT SHAPE):
   "children": [
     {{
       "level": 1,
-      "name": "Main Title",
+      "name": "Slide 1 Title",
       "children": [
         {{
           "level": 2,
-          "name": "Section Heading",
+          "name": "Main Point 1",
           "children": [
             {{
-              "level": 3,
-              "name": "Subheading",
-              "children": [
-                {{
-                  "level": 4,
-                  "name": "Sub-subheading",
-                  "children": [
-                    {{
-                      "level": 0,
-                      "name": "Paragraph text here"
-                    }}
-                  ]
-                }}
-              ]
+              "level": 0,
+              "name": "Supporting detail or explanation text"
+            }}
+          ]
+        }},
+        {{
+          "level": 2,
+          "name": "Main Point 2",
+          "children": [
+            {{
+              "level": 0,
+              "name": "Supporting detail or explanation text"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "level": 1,
+      "name": "Slide 2 Title",
+      "children": [
+        {{
+          "level": 2,
+          "name": "Main Point",
+          "children": [
+            {{
+              "level": 0,
+              "name": "Details here"
             }}
           ]
         }}
@@ -410,15 +189,15 @@ HIERARCHY FORMAT (FOLLOW EXACT SHAPE):
 }}
 
 CONTENT RULES:
-- Write meaningful titles based on topic.
-- Every sub-level must have 2–4 children with level: 0 paragraphs.
-- Paragraphs should be 1–2 lines each.
-- Maintain logical flow (intro → background → pillars → deep dive → relationships → conclusion).
+- Create exactly {request.slide_count} slides (level 1 nodes).
+- Each slide should have 2-4 main points (level 2).
+- Each point can have supporting details (level 0).
+- Keep text concise and presentation-friendly.
+- Follow logical flow: introduction → main content → conclusion.
 
 YOUR RESPONSE:
 Return ONLY the final JSON.
 """
-
 
     def stream_response():
         try:
@@ -428,77 +207,329 @@ Return ONLY the final JSON.
                     clean = chunk.text.strip()
                     final_data = json.dumps({
                         "status": 3,
-                          "text": clean
-                          })
+                        "text": clean
+                    })
                     yield f"data: {json.dumps({'status': 4, 'result': final_data})}\n\n"
 
-
         except Exception as e:
-            yield f"\nERROR: {str(e)}"
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
-@app.post("/generate-ppt")
-async def generate_ppt(request: GeneratePPTRequest):
+
+
+
+
+
+
+
+
+
+
+
+def get_template_path(template_id: str) -> str:
+    """Get template file path from template_id"""
+    for filename, info in TEMPLATE_INFO.items():
+        if info["id"] == template_id:
+            path = TEMPLATE_DIR / filename
+            if not path.exists():
+                raise FileNotFoundError(f"Template file not found: {filename}")
+            return str(path)
+    raise ValueError(f"Invalid template_id: {template_id}")
+
+def parse_content_to_slides(content_dict: dict) -> List[Dict]:
     """
-    STEP 2: Generate final PPT with selected template
-    Takes the outline from step 1 and applies it to chosen template
+    Parse hierarchical JSON structure into slide format.
+    Input: {"children": [{"level": 1, "name": "...", "children": [...]}, ...]}
+    Output: [{"title": "...", "contents": ["...", "..."]}, ...]
+    """
+    slides = []
+    current_slide = None
+
+    def process_node(node):
+        nonlocal current_slide
+        
+        level = node.get("level", 0)
+        name = node.get("name", "").strip()
+        
+        if not name:
+            # Process children if name is empty
+            for child in node.get("children", []):
+                process_node(child)
+            return
+        
+        # Level 1 = New Slide (Title)
+        if level == 1:
+            if current_slide:
+                slides.append(current_slide)
+            current_slide = {"title": name, "contents": []}
+        
+        # Level 2 = Main bullet point
+        elif level == 2 and current_slide:
+            current_slide["contents"].append(f"• {name}")
+        
+        # Level 3 = Sub bullet point (indented)
+        elif level == 3 and current_slide:
+            current_slide["contents"].append(f"  ◦ {name}")
+        
+        # Level 4 = Sub-sub bullet point (more indented)
+        elif level == 4 and current_slide:
+            current_slide["contents"].append(f"    ▪ {name}")
+        
+        # Level 0 = Paragraph/description
+        elif level == 0 and current_slide:
+            current_slide["contents"].append(name)
+        
+        # Process children recursively
+        for child in node.get("children", []):
+            process_node(child)
+    
+    # Start processing
+    if "children" in content_dict:
+        for child in content_dict["children"]:
+            process_node(child)
+    else:
+        process_node(content_dict)
+    
+    # Add last slide
+    if current_slide:
+        slides.append(current_slide)
+    
+    return slides
+
+def get_shape_font_size(shape):
+    """Get average font size of shape (larger = likely title)"""
+    if not shape.has_text_frame:
+        return 0
+    
+    sizes = []
+    for paragraph in shape.text_frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size:
+                sizes.append(run.font.size.pt)
+    
+    return sum(sizes) / len(sizes) if sizes else 0
+
+
+def replace_text_preserve_style(shape, new_text):
+    """Replace text in shape while preserving formatting"""
+    if not shape.has_text_frame:
+        return
+    
+    text_frame = shape.text_frame
+    
+    # Clear existing paragraphs except first
+    while len(text_frame.paragraphs) > 1:
+        p = text_frame.paragraphs[1]
+        p._element.getparent().remove(p._element)
+    
+    paragraph = text_frame.paragraphs[0]
+    
+    # Save original formatting from first run
+    original_format = None
+    if paragraph.runs:
+        first_run = paragraph.runs[0]
+        original_format = {
+            "bold": first_run.font.bold,
+            "italic": first_run.font.italic,
+            "size": first_run.font.size,
+            "name": first_run.font.name,
+        }
+        
+        # Get color if available
+        try:
+            if first_run.font.color.rgb:
+                original_format["color"] = first_run.font.color.rgb
+        except:
+            pass
+    
+    # Clear all runs
+    for run in list(paragraph.runs):
+        run._element.getparent().remove(run._element)
+    
+    # Add new text with original formatting
+    new_run = paragraph.add_run()
+    new_run.text = new_text
+    
+    if original_format:
+        new_run.font.bold = original_format.get("bold")
+        new_run.font.italic = original_format.get("italic")
+        new_run.font.size = original_format.get("size")
+        new_run.font.name = original_format.get("name")
+        
+        if "color" in original_format:
+            try:
+                new_run.font.color.rgb = original_format["color"]
+            except:
+                pass
+
+def trim_slides(prs, required_count):
+    """Remove extra slides if template has more than needed"""
+    slide_count = len(prs.slides)
+    
+    if slide_count <= required_count:
+        return prs
+    
+    # Remove slides from end
+    for i in range(slide_count - 1, required_count - 1, -1):
+        rId = prs.slides._sldIdLst[i].rId
+        prs.part.drop_rel(rId)
+        del prs.slides._sldIdLst[i]
+    
+    return prs
+
+def duplicate_last_slide(prs, times):
+    """Duplicate the last slide to match required count"""
+    if len(prs.slides) == 0:
+        return prs
+    
+    source_slide = prs.slides[-1]
+    
+    for _ in range(times):
+        # Get blank slide layout (usually index 6, but can vary)
+        blank_layout = prs.slide_layouts[6]
+        new_slide = prs.slides.add_slide(blank_layout)
+        
+        # Copy all shapes from source slide
+        for shape in source_slide.shapes:
+            el = shape.element
+            newel = copy.deepcopy(el)
+            new_slide.shapes._spTree.insert_element_before(newel, 'p:extLst')
+    
+    return prs
+
+def apply_content_to_slides(prs, ai_slides: List[Dict]):
+    """Apply AI-generated content to presentation slides"""
+    logs = []
+    required_slides = len(ai_slides)
+    current_slides = len(prs.slides)
+    
+    # Adjust slide count
+    if current_slides > required_slides:
+        trim_slides(prs, required_slides)
+        logs.append(f"🗑 Trimmed from {current_slides} to {required_slides} slides")
+    elif current_slides < required_slides:
+        # Note: Duplicating slides can be complex, keeping simple for now
+        logs.append(f"⚠️ Template has {current_slides} slides, need {required_slides}")
+    
+    # Apply content to each slide
+    for idx, slide in enumerate(prs.slides):
+        if idx >= len(ai_slides):
+            break
+        
+        ai_slide = ai_slides[idx]
+        title_text = ai_slide["title"]
+        content_texts = ai_slide["contents"]
+        
+        # Find all text shapes and sort by font size
+        text_shapes = []
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip():
+                font_size = get_shape_font_size(shape)
+                text_shapes.append((shape, font_size))
+        
+        if not text_shapes:
+            logs.append(f"⚠️ Slide {idx+1}: No text shapes found")
+            continue
+        
+        # Sort by font size (largest first = title)
+        text_shapes.sort(key=lambda x: x[1], reverse=True)
+        
+        # Replace title (largest text shape)
+        title_shape = text_shapes[0][0]
+        replace_text_preserve_style(title_shape, title_text)
+        logs.append(f"✅ Slide {idx+1}: Title updated - '{title_text}'")
+        
+        # Replace content in remaining shapes
+        content_shapes = [shape for shape, _ in text_shapes[1:]]
+        
+        for i, content_text in enumerate(content_texts):
+            if i < len(content_shapes):
+                replace_text_preserve_style(content_shapes[i], content_text)
+                logs.append(f"   ✓ Content {i+1}: {content_text[:50]}...")
+            else:
+                logs.append(f"   ⚠️ Not enough content shapes for item {i+1}")
+        
+        # Clear unused content shapes
+        for i in range(len(content_texts), len(content_shapes)):
+            content_shapes[i].text = ""
+    
+    return prs, logs
+
+
+@app.post("/create-presentation")
+async def create_presentation(request: GeneratePPTRequest):
+    """
+    Generate PowerPoint from template and AI content
+    
+    Body:
+    {
+        "template_id": "template_1",
+        "content": {
+            "children": [
+                {"level": 1, "name": "Slide Title", "children": [...]},
+                ...
+            ]
+        }
+    }
     """
     try:
         print(f"\n{'='*60}")
-        print(f"📊 STEP 2: Generating PowerPoint")
+        print(f"📊 Creating PowerPoint Presentation")
         print(f"{'='*60}")
-        print(f"Topic: {request.topic}")
-        print(f"Template: {request.template}")
-        print(f"Slides: {len(request.outline)}")
-
-        # Validate inputs
-        if not request.topic.strip():
-            raise HTTPException(
-                status_code=400, detail="Topic cannot be empty")
-
-        if not request.outline:
-            raise HTTPException(
-                status_code=400, detail="Outline cannot be empty")
-
-        # Get template path
-        print("🔍 Loading template...")
-        template_path = get_template_path(request.template)
-
-        # Apply outline to template
-        print("📝 Applying content to template...")
-        ppt_stream, logs = replace_text_in_ppt(template_path, request.outline)
-
-        print("\n✨ Replacement Log:")
+        print(f"Template ID: {request.template_id}")
+        
+        # Validate template
+        template_path = get_template_path(request.template_id)
+        print(f"✓ Template found: {template_path}")
+        
+        # Parse content structure
+        print(f"📝 Parsing content structure...")
+        ai_slides = parse_content_to_slides(request.content)
+        print(f"✓ Parsed {len(ai_slides)} slides")
+        
+        # Debug: Print parsed slides
+        for i, slide in enumerate(ai_slides):
+            print(f"\nSlide {i+1}: {slide['title']}")
+            print(f"  Contents: {len(slide['contents'])} items")
+        
+        # Load template
+        print(f"\n📂 Loading template...")
+        prs = Presentation(template_path)
+        print(f"✓ Template loaded: {len(prs.slides)} slides")
+        
+        # Apply content
+        print(f"\n🔄 Applying content to slides...")
+        prs, logs = apply_content_to_slides(prs, ai_slides)
+        
+        # Print logs
         for log in logs:
-            print(f"   {log}")
-
-        print(f"\n✅ PPT created successfully!")
-        print(f"   Size: {ppt_stream.getbuffer().nbytes:,} bytes")
-
+            print(log)
+        
+        # Save to BytesIO
+        print(f"\n💾 Saving presentation...")
+        ppt_stream = io.BytesIO()
+        prs.save(ppt_stream)
+        ppt_stream.seek(0)
+        
         # Generate filename
-        safe_topic = "".join(
-            c for c in request.topic if c.isalnum() or c in (' ', '-', '_')).strip()
-        safe_topic = safe_topic.replace(" ", "_")[:30]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"AI_{safe_topic}_{timestamp}.pptx"
-
-        print(f"   Filename: {filename}")
+        filename = f"Presentation_{timestamp}.pptx"
+        
+        print(f"✅ Presentation created successfully!")
         print(f"{'='*60}\n")
-
+        
         # Return file
-        headers = {
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        }
-
         return StreamingResponse(
             ppt_stream,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers=headers
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
         )
-
+    
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -507,36 +538,48 @@ async def generate_ppt(request: GeneratePPTRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(
-            status_code=500, detail=f"Failed to generate PPT: {str(e)}")
+            status_code=500,
+            detail=f"Failed to create presentation: {str(e)}"
+        )
 
-# -----------------------------------------------------------------------------
-# Run Server
-# -----------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     import uvicorn
 
     print("=" * 60)
-    print("AI PPT Generator API Server - New Flow")
+    print("🚀 AI PPT Generator API Server")
     print("=" * 60)
-    print(f"Templates directory: {TEMPLATE_DIR.absolute()}")
-    print(f"Required templates: {', '.join(VALID_TEMPLATES)}")
-    print("=" * 60)
-
+    print(f"📁 Templates directory: {TEMPLATE_DIR.absolute()}")
+    print(f"📋 Available templates: {len(TEMPLATE_INFO)}")
+    
     # Check templates
-    missing = [t for t in VALID_TEMPLATES if not (TEMPLATE_DIR / t).exists()]
+    missing = [f for f in TEMPLATE_INFO.keys() if not (TEMPLATE_DIR / f).exists()]
     if missing:
         print(f"⚠️  WARNING: Missing templates: {', '.join(missing)}")
-        print(f"   Please add these files to: {TEMPLATE_DIR.absolute()}")
+        print(f"   Add these files to: {TEMPLATE_DIR.absolute()}")
     else:
         print("✅ All templates found!")
 
     print("=" * 60)
-    print("\nNEW FLOW:")
-    print("1. POST /analyze-topic - User provides topic, get outline")
-    print("2. POST /generate-ppt - User selects template, get final PPT")
+    print("\n📡 API Endpoints:")
+    print("   POST /generate-content - Generate AI content")
+    print("   POST /generate-ppt     - Create PowerPoint")
+    print("   GET  /templates        - List templates")
+    print("   GET  /health           - Health check")
     print("=" * 60)
-    print("\nStarting server on http://localhost:8000")
-    print("API Docs: http://localhost:8000/docs")
-    print("=" * 60)
+    print("\n🌐 Starting server on http://localhost:8000")
+    print("📚 API Docs: http://localhost:8000/docs")
+    print("=" * 60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

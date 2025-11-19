@@ -358,7 +358,7 @@
             font-weight: bold;
         }
 
-        .stream-content > ul > li::before {
+        .stream-content>ul>li::before {
             content: '▶';
             color: #4a9eff;
             font-size: 12px;
@@ -440,6 +440,36 @@
             .templates-grid {
                 grid-template-columns: 1fr;
             }
+        }
+    </style>
+    <style>
+        /* Step 4 - Create Presentation */
+        .step4-content {
+            display: none;
+        }
+
+        .step4-content.active {
+            display: block;
+        }
+
+        .success-message {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+            color: #22c55e;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .success-message h3 {
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+
+        .download-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
         }
     </style>
 </head>
@@ -550,6 +580,34 @@
                 Create Presentation →
             </button>
         </div>
+
+
+        <!-- Step 4: Create Presentation -->
+        <div class="step4-content" id="step4">
+            <div class="content-header">
+                <h2 id="step4Title">Creating Your Presentation...</h2>
+                <p id="step4Subtitle">Please wait while we generate your PowerPoint</p>
+            </div>
+
+            <div id="errorContainer4"></div>
+
+            <div class="stream-container">
+                <div id="creationStatus" class="stream-content">
+                    <div class="loading-spinner">
+                        <div class="spinner"></div>
+                        <span>Preparing your presentation...</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="prev-btn" id="prevStep4Btn" style="display: none;">
+                ← Previous Step
+            </button>
+
+            <button class="next-btn" id="downloadBtn" style="display: none;">
+                📥 Download Presentation
+            </button>
+        </div>
     </div>
 
     <script>
@@ -563,8 +621,11 @@
             length: 'Medium',
             model: 'Basic Model',
             generatedContent: '',
-            selectedTemplate: null
+            selectedTemplate: null,
+            presentationFile: null
         };
+
+
 
         // Elements
         const step1El = document.getElementById('step1');
@@ -583,6 +644,12 @@
         const errorContainer3 = document.getElementById('errorContainer3');
         const templatesContainer = document.getElementById('templatesContainer');
 
+        const step4El = document.getElementById('step4');
+        const prevStep4Btn = document.getElementById('prevStep4Btn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const errorContainer4 = document.getElementById('errorContainer4');
+        const creationStatus = document.getElementById('creationStatus');
+
         // Step indicators
         const indicators = {
             step1: document.getElementById('step1-indicator'),
@@ -590,6 +657,17 @@
             step3: document.getElementById('step3-indicator'),
             step4: document.getElementById('step4-indicator')
         };
+
+        // Create presentation button
+        createPresentationBtn.addEventListener('click', async () => {
+            if (!formData.selectedTemplate) {
+                showError3('Please select a template');
+                return;
+            }
+            currentStep = 4;
+            updateUI();
+            await createPresentation();
+        });
 
         // Character counter
         topicInput.addEventListener('input', (e) => {
@@ -631,6 +709,21 @@
             updateUI();
         });
 
+        prevStep4Btn.addEventListener('click', () => {
+            currentStep = 3;
+            updateUI();
+        });
+        downloadBtn.addEventListener('click', () => {
+            if (formData.presentationFile) {
+                const link = document.createElement('a');
+                link.href = `${API_BASE}${formData.presentationFile}`;
+                link.download = 'presentation.pptx';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        });
+
         // Continue button - Go to templates
         continueBtn.addEventListener('click', async () => {
             currentStep = 3;
@@ -644,7 +737,7 @@
                 showError3('Please select a template');
                 return;
             }
-            alert('Step 4: Create presentation (to be implemented)');
+            // alert('Step 4: Create presentation (to be implemented)');
         });
 
         function updateUI() {
@@ -652,6 +745,7 @@
             step1El.classList.add('hidden');
             step2El.classList.remove('active');
             step3El.classList.remove('active');
+            step4El.classList.remove('active');  // Add this line
 
             // Reset indicators
             Object.values(indicators).forEach(ind => {
@@ -670,6 +764,12 @@
                 indicators.step1.classList.add('completed');
                 indicators.step2.classList.add('completed');
                 indicators.step3.classList.add('active');
+            } else if (currentStep === 4) {  // Add this block
+                step4El.classList.add('active');
+                indicators.step1.classList.add('completed');
+                indicators.step2.classList.add('completed');
+                indicators.step3.classList.add('completed');
+                indicators.step4.classList.add('active');
             }
         }
 
@@ -719,14 +819,16 @@
                                     const parsedResult = JSON.parse(data.result);
                                     if (parsedResult.text) {
                                         fullContent += parsedResult.text;
-                                        
+
                                         const cleanJson = fullContent
                                             .replace(/```json\n?/g, '')
                                             .replace(/```\n?/g, '')
                                             .trim();
-                                        
+
                                         try {
                                             const jsonData = JSON.parse(cleanJson);
+                                            console.log(jsonData);
+                                            formData.generatedContent = jsonData;
                                             loadingSpinner.style.display = 'none';
                                             const outlineHtml = treeToBullets(jsonData);
                                             pptOutline.innerHTML = outlineHtml;
@@ -759,6 +861,66 @@
             }
         }
 
+
+
+        async function createPresentation() {
+            console.log(formData);
+            creationStatus.innerHTML = `
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <span>Creating your presentation...</span>
+        </div>
+    `;
+
+            prevStep4Btn.style.display = 'none';
+            downloadBtn.style.display = 'none';
+            errorContainer4.innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/create-presentation`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        template_id: formData.selectedTemplate,
+                        content: formData.generatedContent  // Ye JSON object jayega
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.file_path) {
+                    formData.presentationFile = data.file_path;
+
+                    creationStatus.innerHTML = `
+                <div class="success-message">
+                    <div class="download-icon">✅</div>
+                    <h3>Presentation Created Successfully!</h3>
+                    <p>Your PowerPoint presentation is ready to download</p>
+                </div>
+            `;
+
+                    document.getElementById('step4Title').textContent = 'Presentation Ready!';
+                    document.getElementById('step4Subtitle').textContent = 'Click below to download your presentation';
+
+                    downloadBtn.style.display = 'block';
+                    prevStep4Btn.style.display = 'block';
+                } else {
+                    throw new Error('No file path in response');
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                creationStatus.innerHTML = '';
+                showError4('Failed to create presentation. Please try again.');
+                prevStep4Btn.style.display = 'block';
+            }
+        }
         function showError(message) {
             errorContainer.innerHTML = `
                 <div class="error-message">
@@ -774,6 +936,14 @@
                 </div>
             `;
         }
+        function showError4(message) {
+            errorContainer4.innerHTML = `
+        <div class="error-message">
+            ${message}
+        </div>
+    `;
+        }
+
 
         async function loadTemplates() {
             templatesContainer.innerHTML = `
@@ -787,7 +957,7 @@
 
             try {
                 const response = await fetch(`${API_BASE}/templates`);
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -815,10 +985,10 @@
             const gridHtml = templates.map((template, index) => `
                 <div class="template-card" data-template-id="${template.id || template.name || index}">
                     <div class="template-thumbnail">
-                        ${template.thumbnail_url 
-                            ? `<img src="${template.thumbnail_url}" alt="${template.name || 'Template'}">`
-                            : `<div class="template-placeholder">📊</div>`
-                        }
+                        ${template.thumbnail_url
+                    ? `<img src="${template.thumbnail_url}" alt="${template.name || 'Template'}">`
+                    : `<div class="template-placeholder">📊</div>`
+                }
                         <div class="selected-badge">✓ Selected</div>
                     </div>
                     <div class="template-info">
@@ -838,7 +1008,7 @@
                     document.querySelectorAll('.template-card').forEach(c => {
                         c.classList.remove('selected');
                     });
-                    
+
                     card.classList.add('selected');
                     formData.selectedTemplate = card.dataset.templateId;
                     createPresentationBtn.style.display = 'block';
