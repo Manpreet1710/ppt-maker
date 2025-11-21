@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 import os
+from pptx.util import Pt
+
 
 app = FastAPI(title="AI PPT Generator API")
 
@@ -36,9 +38,11 @@ class ContentGenRequest(BaseModel):
     language: str = "English"
     tone: str = "Professional"
 
+
 class GeneratePPTRequest(BaseModel):
-    content: Any  # JSON string from AI
-    template_id: str  # template_id like "template_1"
+    template_id: str
+    content: Any
+
 
 TEMPLATE_INFO = {
     "template-1.pptx": {
@@ -67,6 +71,7 @@ TEMPLATE_INFO = {
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
+
 
 @app.get("/")
 def root():
@@ -217,17 +222,6 @@ Return ONLY the final JSON.
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
-
-
-
-
-
-
-
-
-
-
-
 def get_template_path(template_id: str) -> str:
     """Get template file path from template_id"""
     for filename, info in TEMPLATE_INFO.items():
@@ -238,314 +232,348 @@ def get_template_path(template_id: str) -> str:
             return str(path)
     raise ValueError(f"Invalid template_id: {template_id}")
 
-def parse_content_to_slides(content_dict: dict) -> List[Dict]:
-    """
-    Parse hierarchical JSON structure into slide format.
-    Input: {"children": [{"level": 1, "name": "...", "children": [...]}, ...]}
-    Output: [{"title": "...", "contents": ["...", "..."]}, ...]
-    """
-    slides = []
-    current_slide = None
+def extract_template_placeholders(template_path: str):
+    prs = Presentation(template_path)
+    template_structure = []
 
-    def process_node(node):
-        nonlocal current_slide
-        
-        level = node.get("level", 0)
-        name = node.get("name", "").strip()
-        
-        if not name:
-            # Process children if name is empty
-            for child in node.get("children", []):
-                process_node(child)
-            return
-        
-        # Level 1 = New Slide (Title)
-        if level == 1:
-            if current_slide:
-                slides.append(current_slide)
-            current_slide = {"title": name, "contents": []}
-        
-        # Level 2 = Main bullet point
-        elif level == 2 and current_slide:
-            current_slide["contents"].append(f"• {name}")
-        
-        # Level 3 = Sub bullet point (indented)
-        elif level == 3 and current_slide:
-            current_slide["contents"].append(f"  ◦ {name}")
-        
-        # Level 4 = Sub-sub bullet point (more indented)
-        elif level == 4 and current_slide:
-            current_slide["contents"].append(f"    ▪ {name}")
-        
-        # Level 0 = Paragraph/description
-        elif level == 0 and current_slide:
-            current_slide["contents"].append(name)
-        
-        # Process children recursively
-        for child in node.get("children", []):
-            process_node(child)
-    
-    # Start processing
-    if "children" in content_dict:
-        for child in content_dict["children"]:
-            process_node(child)
-    else:
-        process_node(content_dict)
-    
-    # Add last slide
-    if current_slide:
-        slides.append(current_slide)
-    
-    return slides
+    for slide_index, slide in enumerate(prs.slides, start=1):
+        slide_info = {
+            "slide_number": slide_index,
+            "placeholders": []
+        }
 
-def get_shape_font_size(shape):
-    """Get average font size of shape (larger = likely title)"""
-    if not shape.has_text_frame:
-        return 0
-    
-    sizes = []
-    for paragraph in shape.text_frame.paragraphs:
-        for run in paragraph.runs:
-            if run.font.size:
-                sizes.append(run.font.size.pt)
-    
-    return sum(sizes) / len(sizes) if sizes else 0
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                slide_info["placeholders"].append({
+                    "id": id(shape),
+                    "type": "BODY" if shape.is_placeholder else "TEXT",
+                    "text": shape.text
+                })
+        template_structure.append(slide_info)
+
+    return template_structure
 
 
-def replace_text_preserve_style(shape, new_text):
-    """Replace text in shape while preserving formatting"""
+
+
+def set_text_preserve_format(shape, new_text):
+    """Replace text in a shape while preserving formatting."""
     if not shape.has_text_frame:
         return
     
     text_frame = shape.text_frame
     
-    # Clear existing paragraphs except first
-    while len(text_frame.paragraphs) > 1:
-        p = text_frame.paragraphs[1]
-        p._element.getparent().remove(p._element)
+    # Clear existing text
+    for paragraph in text_frame.paragraphs:
+        for run in paragraph.runs:
+            run.text = ""
     
-    paragraph = text_frame.paragraphs[0]
-    
-    # Save original formatting from first run
-    original_format = None
-    if paragraph.runs:
-        first_run = paragraph.runs[0]
-        original_format = {
-            "bold": first_run.font.bold,
-            "italic": first_run.font.italic,
-            "size": first_run.font.size,
-            "name": first_run.font.name,
-        }
+    # Add new text with preserved formatting
+    if text_frame.paragraphs and text_frame.paragraphs[0].runs:
+        first_run = text_frame.paragraphs[0].runs[0]
+        new_run = text_frame.paragraphs[0].add_run()
+        new_run.text = new_text
         
-        # Get color if available
-        try:
-            if first_run.font.color.rgb:
-                original_format["color"] = first_run.font.color.rgb
-        except:
-            pass
-    
-    # Clear all runs
-    for run in list(paragraph.runs):
-        run._element.getparent().remove(run._element)
-    
-    # Add new text with original formatting
-    new_run = paragraph.add_run()
-    new_run.text = new_text
-    
-    if original_format:
-        new_run.font.bold = original_format.get("bold")
-        new_run.font.italic = original_format.get("italic")
-        new_run.font.size = original_format.get("size")
-        new_run.font.name = original_format.get("name")
-        
-        if "color" in original_format:
-            try:
-                new_run.font.color.rgb = original_format["color"]
-            except:
-                pass
+        # Copy formatting
+        if first_run.font.name:
+            new_run.font.name = first_run.font.name
+        if first_run.font.size:
+            new_run.font.size = first_run.font.size
+        new_run.font.bold = first_run.font.bold
+        new_run.font.italic = first_run.font.italic
+        if first_run.font.color.rgb:
+            new_run.font.color.rgb = first_run.font.color.rgb
+    else:
+        text_frame.text = new_text
 
-def trim_slides(prs, required_count):
-    """Remove extra slides if template has more than needed"""
-    slide_count = len(prs.slides)
-    
-    if slide_count <= required_count:
-        return prs
-    
-    # Remove slides from end
-    for i in range(slide_count - 1, required_count - 1, -1):
-        rId = prs.slides._sldIdLst[i].rId
-        prs.part.drop_rel(rId)
-        del prs.slides._sldIdLst[i]
-    
-    return prs
 
-def duplicate_last_slide(prs, times):
-    """Duplicate the last slide to match required count"""
-    if len(prs.slides) == 0:
-        return prs
+def fill_template_with_ai_content(prs: Presentation, title: str, children: list) -> Presentation:
+    """
+    Fill PPT template with AI-generated content.
     
-    source_slide = prs.slides[-1]
+    Template Structure (21 slides):
+    - Slide 1: Title
+    - Slide 2: Agenda
+    - Slides 3-21: 6 sections, each with:
+        * Section divider (title + number)
+        * 2 content slides per section
+    """
+    print("\n===== FILLING PPT CONTENT =====")
     
-    for _ in range(times):
-        # Get blank slide layout (usually index 6, but can vary)
-        blank_layout = prs.slide_layouts[6]
-        new_slide = prs.slides.add_slide(blank_layout)
-        
-        # Copy all shapes from source slide
-        for shape in source_slide.shapes:
-            el = shape.element
-            newel = copy.deepcopy(el)
-            new_slide.shapes._spTree.insert_element_before(newel, 'p:extLst')
+    slides = prs.slides
     
-    return prs
-
-def apply_content_to_slides(prs, ai_slides: List[Dict]):
-    """Apply AI-generated content to presentation slides"""
-    logs = []
-    required_slides = len(ai_slides)
-    current_slides = len(prs.slides)
+    # ========================================
+    # SLIDE 1: TITLE SLIDE
+    # ========================================
+    print(f"\n[Slide 1] Title = {title}")
+    title_shapes = [s for s in slides[0].shapes if s.has_text_frame]
     
-    # Adjust slide count
-    if current_slides > required_slides:
-        trim_slides(prs, required_slides)
-        logs.append(f"🗑 Trimmed from {current_slides} to {required_slides} slides")
-    elif current_slides < required_slides:
-        # Note: Duplicating slides can be complex, keeping simple for now
-        logs.append(f"⚠️ Template has {current_slides} slides, need {required_slides}")
+    if title_shapes:
+        set_text_preserve_format(title_shapes[0], title)
     
-    # Apply content to each slide
-    for idx, slide in enumerate(prs.slides):
-        if idx >= len(ai_slides):
+    # ========================================
+    # SLIDE 2: AGENDA SLIDE
+    # ========================================
+    agenda_slide = slides[1]
+    text_shapes = [s for s in agenda_slide.shapes if s.has_text_frame]
+    
+    # Separate heading from items
+    agenda_title_shape = None
+    agenda_item_shapes = []
+    
+    for shape in text_shapes:
+        text = shape.text.strip().upper()
+        if text == "AGENDA":
+            agenda_title_shape = shape
+        else:
+            agenda_item_shapes.append(shape)
+    
+    # Sort by vertical position
+    agenda_item_shapes.sort(key=lambda x: x.top)
+    
+    # Fill agenda items with Level-2 names from AI content
+    agenda_items = [child["name"] for child in children]
+    
+    print(f"\n[Slide 2] Agenda Items:")
+    for i, item in enumerate(agenda_items):
+        print(f"   {i+1}. {item}")
+        if i < len(agenda_item_shapes):
+            set_text_preserve_format(agenda_item_shapes[i], item)
+    
+    # ========================================
+    # SLIDES 3-21: SECTION CONTENT
+    # ========================================
+    # Pattern: Every section has 3 slides (divider + 2 content)
+    # Slide indices: 2, 5, 8, 11, 14, 17 (dividers for 6 sections)
+    
+    section_divider_slides = [2, 6, 9, 12, 15, 18]  # 0-indexed: slides 3, 7, 10, 13, 16, 19
+    
+    print("\n=== PROCESSING SECTIONS ===")
+    
+    for section_idx, child in enumerate(children):
+        if section_idx >= 6:  # Template only has 6 sections
             break
         
-        ai_slide = ai_slides[idx]
-        title_text = ai_slide["title"]
-        content_texts = ai_slide["contents"]
+        # Get section divider slide index
+        divider_idx = section_divider_slides[section_idx]
         
-        # Find all text shapes and sort by font size
-        text_shapes = []
-        for shape in slide.shapes:
-            if shape.has_text_frame and shape.text.strip():
-                font_size = get_shape_font_size(shape)
-                text_shapes.append((shape, font_size))
+        if divider_idx >= len(slides):
+            break
         
-        if not text_shapes:
-            logs.append(f"⚠️ Slide {idx+1}: No text shapes found")
-            continue
+        print(f"\n--- SECTION {section_idx + 1}: {child['name']} ---")
         
-        # Sort by font size (largest first = title)
-        text_shapes.sort(key=lambda x: x[1], reverse=True)
+        # ========================================
+        # SECTION DIVIDER SLIDE
+        # ========================================
+        divider_slide = slides[divider_idx]
+        divider_shapes = [s for s in divider_slide.shapes if s.has_text_frame]
         
-        # Replace title (largest text shape)
-        title_shape = text_shapes[0][0]
-        replace_text_preserve_style(title_shape, title_text)
-        logs.append(f"✅ Slide {idx+1}: Title updated - '{title_text}'")
+        # Separate title shape from number shape
+        title_shape = None
+        number_shape = None
         
-        # Replace content in remaining shapes
-        content_shapes = [shape for shape, _ in text_shapes[1:]]
-        
-        for i, content_text in enumerate(content_texts):
-            if i < len(content_shapes):
-                replace_text_preserve_style(content_shapes[i], content_text)
-                logs.append(f"   ✓ Content {i+1}: {content_text[:50]}...")
+        for shape in divider_shapes:
+            text = shape.text.strip()
+            # Check if this is the number (01, 02, etc.)
+            if text in ["01", "02", "03", "04", "05", "06"]:
+                number_shape = shape
             else:
-                logs.append(f"   ⚠️ Not enough content shapes for item {i+1}")
+                title_shape = shape
         
-        # Clear unused content shapes
-        for i in range(len(content_texts), len(content_shapes)):
-            content_shapes[i].text = ""
+        # Fill section title (DO NOT change the number)
+        if title_shape:
+            print(f"[Slide {divider_idx + 1}] Section Title: {child['name']}")
+            set_text_preserve_format(title_shape, child['name'])
+        
+        # Keep the number unchanged
+        if number_shape:
+            print(f"[Slide {divider_idx + 1}] Section Number: {number_shape.text} (preserved)")
+            # Don't modify number_shape at all
+        
+        # ========================================
+        # CONTENT SLIDES (2 slides after divider)
+        # ========================================
+        level3_items = child.get("children", [])
+        content_slide_indices = [divider_idx + 1, divider_idx + 2]
+        
+        content_pointer = 0  # Track position in level3_items
+        
+        for content_slide_idx in content_slide_indices:
+            if content_slide_idx >= len(slides):
+                break
+            
+            content_slide = slides[content_slide_idx]
+            content_shapes = [s for s in content_slide.shapes if s.has_text_frame]
+            
+            # Sort by position: top-to-bottom within left-to-right columns
+            # Divide slide into left/right halves based on shape positions
+            # Default PowerPoint slide width is ~9144000 EMUs (10 inches)
+            
+            if content_shapes:
+                # Find the midpoint based on actual shape positions
+                all_lefts = [s.left for s in content_shapes]
+                min_left = min(all_lefts)
+                max_left = max(all_lefts)
+                mid_point = (min_left + max_left) / 2
+            else:
+                mid_point = 4572000  # Default half of standard slide width
+            
+            left_shapes = [s for s in content_shapes if s.left < mid_point]
+            right_shapes = [s for s in content_shapes if s.left >= mid_point]
+            
+            left_shapes.sort(key=lambda x: x.top)
+            right_shapes.sort(key=lambda x: x.top)
+            
+            # Combine: all left shapes first, then right shapes
+            sorted_shapes = left_shapes + right_shapes
+            
+            print(f"\n[Slide {content_slide_idx + 1}] Layout:")
+            print(f"   Left column: {len(left_shapes)} shapes")
+            print(f"   Right column: {len(right_shapes)} shapes")
+            print(f"   Fill order: Left-top to bottom, then Right-top to bottom")
+            
+            shape_idx = 0
+            
+            # Fill this slide with level-3 and level-4 content
+            while content_pointer < len(level3_items) and shape_idx < len(sorted_shapes):
+                level3 = level3_items[content_pointer]
+                level4_items = level3.get("children", [])
+                
+                # LEVEL-3 Title (e.g., "Defining Love: A Multifaceted Emotion")
+                print(f"\n   📌 L3: {level3['name']}")
+                if shape_idx < len(sorted_shapes):
+                    set_text_preserve_format(sorted_shapes[shape_idx], level3['name'])
+                    print(f"      → Filled shape {shape_idx + 1}")
+                    shape_idx += 1
+                
+                # LEVEL-4 Items with their level-0 descriptions
+                for level4 in level4_items:
+                    if shape_idx >= len(sorted_shapes):
+                        break
+                    
+                    # LEVEL-4 Heading (e.g., "The Spectrum of Love")
+                    print(f"   📍 L4: {level4['name']}")
+                    set_text_preserve_format(sorted_shapes[shape_idx], level4['name'])
+                    print(f"      → Filled shape {shape_idx + 1}")
+                    shape_idx += 1
+                    
+                    # LEVEL-0 Description
+                    level0_items = level4.get("children", [])
+                    if level0_items and shape_idx < len(sorted_shapes):
+                        description = level0_items[0]["name"]
+                        print(f"   📄 L0: {description[:60]}...")
+                        set_text_preserve_format(sorted_shapes[shape_idx], description)
+                        print(f"      → Filled shape {shape_idx + 1}")
+                        shape_idx += 1
+                
+                content_pointer += 1
+                
+                # If we've filled all shapes on this slide, move to next slide
+                if shape_idx >= len(sorted_shapes):
+                    print(f"   ✅ Slide full, moving to next slide")
+                    break
     
-    return prs, logs
+    print("\n===== PPT BUILD COMPLETE =====\n")
+    return prs
 
 
-@app.post("/create-presentation")
-async def create_presentation(request: GeneratePPTRequest):
-    """
-    Generate PowerPoint from template and AI content
+# Main execution
+def create_presentation(template_path: str, ai_content: dict):
+    """Main function to create presentation."""
     
-    Body:
-    {
-        "template_id": "template_1",
-        "content": {
-            "children": [
-                {"level": 1, "name": "Slide Title", "children": [...]},
-                ...
-            ]
-        }
+    # Extract data
+    title = ai_content["data"].get("name", "Presentation Title")
+    children = ai_content["data"].get("children", [])
+    
+    # Load template
+    prs = Presentation(template_path)
+    
+    # Fill content
+    prs = fill_template_with_ai_content(prs, title, children)
+    
+    # Save
+    output_path = Path("output_ppt.pptx")
+    prs.save(output_path)
+    
+    return {
+        "status": "success",
+        "message": "PPT generated successfully",
+        "output_file": str(output_path)
     }
-    """
-    try:
-        print(f"\n{'='*60}")
-        print(f"📊 Creating PowerPoint Presentation")
-        print(f"{'='*60}")
-        print(f"Template ID: {request.template_id}")
-        
-        # Validate template
-        template_path = get_template_path(request.template_id)
-        print(f"✓ Template found: {template_path}")
-        
-        # Parse content structure
-        print(f"📝 Parsing content structure...")
-        ai_slides = parse_content_to_slides(request.content)
-        print(f"✓ Parsed {len(ai_slides)} slides")
-        
-        # Debug: Print parsed slides
-        for i, slide in enumerate(ai_slides):
-            print(f"\nSlide {i+1}: {slide['title']}")
-            print(f"  Contents: {len(slide['contents'])} items")
-        
-        # Load template
-        print(f"\n📂 Loading template...")
-        prs = Presentation(template_path)
-        print(f"✓ Template loaded: {len(prs.slides)} slides")
-        
-        # Apply content
-        print(f"\n🔄 Applying content to slides...")
-        prs, logs = apply_content_to_slides(prs, ai_slides)
-        
-        # Print logs
-        for log in logs:
-            print(log)
-        
-        # Save to BytesIO
-        print(f"\n💾 Saving presentation...")
-        ppt_stream = io.BytesIO()
-        prs.save(ppt_stream)
-        ppt_stream.seek(0)
-        
-        # Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"Presentation_{timestamp}.pptx"
-        
-        print(f"✅ Presentation created successfully!")
-        print(f"{'='*60}\n")
-        
-        # Return file
-        return StreamingResponse(
-            ppt_stream,
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition"
-            }
-        )
+@app.post("/create-presentation")
+
+
+
+async def create_presentation(request: GeneratePPTRequest):
+    ai_content = request.content   # <--- FIXED
+
+    # extract title
+    title = ai_content["data"].get("name", "")
     
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create presentation: {str(e)}"
-        )
+    # extract all children for slides
+    children = ai_content["data"].get("children", [])
+
+    template_path = get_template_path(request.template_id)
+    prs = Presentation(template_path)
+
+    prs = fill_template_with_ai_content(prs, title, children)
+
+    output_path = Path("output_ppt.pptx")
+    prs.save(output_path)
+
+    return {
+        "status": "success",
+        "message": "PPT generated successfully",
+        "output_file": str(output_path)
+    }
 
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+@app.get("/debug-template")
+def debug_template(template_id: str):
+    template_path = get_template_path(template_id)
+    prs = Presentation(template_path)
+
+    info = []
+
+    for s_idx, slide in enumerate(prs.slides, start=1):
+        slide_data = {"slide_number": s_idx, "shapes": []}
+        
+        # टेक्स्ट वाली shapes के लिए एक अलग counter शुरू करें
+        text_shape_counter = 0 
+
+        # सभी shapes पर iterate करें
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                # टेक्स्ट वाली shape मिलने पर counter बढ़ाएँ
+                text_shape_counter += 1 
+                
+                paragraphs = [p.text for p in shape.text_frame.paragraphs]
+                text = "\n".join(paragraphs)
+
+                slide_data["shapes"].append({
+                    # अब text_shape_counter का उपयोग करें 
+                    "shape_index": text_shape_counter, 
+                    "placeholder": shape.is_placeholder,
+                    "text": text
+                })
+
+        info.append(slide_data)
+
+    return info
 
 
 
@@ -562,9 +590,10 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"📁 Templates directory: {TEMPLATE_DIR.absolute()}")
     print(f"📋 Available templates: {len(TEMPLATE_INFO)}")
-    
+
     # Check templates
-    missing = [f for f in TEMPLATE_INFO.keys() if not (TEMPLATE_DIR / f).exists()]
+    missing = [f for f in TEMPLATE_INFO.keys() if not (
+        TEMPLATE_DIR / f).exists()]
     if missing:
         print(f"⚠️  WARNING: Missing templates: {', '.join(missing)}")
         print(f"   Add these files to: {TEMPLATE_DIR.absolute()}")
